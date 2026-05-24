@@ -1,0 +1,99 @@
+name: Auto Article - Weekly Update
+on:
+  schedule:
+    # 毎週月曜 午前9時（UTC）に実行
+    - cron: '0 9 * * 1'
+  # 手動トリガー用
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: '検索キーワード（カンマ区切り）'
+        required: true
+        default: 'Transformer,LLM,neural network'
+      max_results:
+        description: '取得件数'
+        required: true
+        default: '10'
+
+jobs:
+  fetch-papers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests feedparser
+
+      - name: Fetch papers from arXIV
+        run: |
+          python .github/skills/paper-research-skill/scripts/fetch_papers.py \
+            --keywords "${{ github.event.inputs.keywords || 'Transformer,LLM,neural network' }}" \
+            --max-results ${{ github.event.inputs.max_results || 10 }} \
+            --output data/papers.json
+
+      - name: Generate summaries template
+        run: |
+          python .github/skills/paper-summarization-skill/scripts/summarize_papers.py \
+            --input data/papers.json \
+            --output data/summaries.json \
+            --max-papers 5
+
+      - name: Generate articles
+        run: |
+          python .github/skills/article-generation-skill/scripts/generate_article.py \
+            --input data/summaries.json \
+            --output articles
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: 'chore: auto-generated articles for AI papers'
+          title: '📚 New AI Paper Articles'
+          body: |
+            ## 自動生成された記事
+            
+            新しいAI系論文の記事が生成されました。
+            
+            以下の内容を確認してください：
+            - [ ] 論文タイトルの日本語化が正確
+            - [ ] キーポイントが正確に抽出された
+            - [ ] 実用例の説明が分かりやすい
+            
+            詳細は各記事ファイル（`articles/`）を参照してください。
+            
+            **Note**: 各論文の詳細な日本語翻訳は、Copilot Chatで `/skills` を使用して実施してください。
+          branch: auto-article/update
+          delete-branch: true
+
+  build-pages:
+    runs-on: ubuntu-latest
+    needs: fetch-papers
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: auto-article/update
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v3
+
+      - name: Generate static site
+        run: |
+          mkdir -p _site
+          cp articles/*.md _site/ || true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v2
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
